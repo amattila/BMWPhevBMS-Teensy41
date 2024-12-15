@@ -1,5 +1,5 @@
 #pragma once
-#include <FlexCAN.h>
+#include <FlexCAN_T4.h>  //https://github.com/collin80/FlexCAN_Library
 
 class BMSModule
 {

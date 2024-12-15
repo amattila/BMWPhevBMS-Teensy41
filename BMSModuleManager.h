@@ -1,7 +1,7 @@
 #pragma once
 #include "config.h"
 #include "BMSModule.h"
-#include <FlexCAN.h>
+#include <FlexCAN_T4.h>  //https://github.com/collin80/FlexCAN_Library
 
 class BMSModuleManager
 {

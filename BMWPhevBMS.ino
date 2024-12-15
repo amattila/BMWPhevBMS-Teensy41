@@ -29,9 +29,10 @@
 #include "CRC8.h"
 #include <ADC.h>  //https://github.com/pedvide/ADC
 #include <EEPROM.h>
-#include <FlexCAN.h>  //https://github.com/collin80/FlexCAN_Library
+#include <FlexCAN_T4.h>  //https://github.com/collin80/FlexCAN_Library
 #include <SPI.h>
 #include <Filters.h>  //https://github.com/JonHub/Filters
+#include "Watchdog_t4.h"
 
 #define RESTART_ADDR 0xE000ED0C
 #define READ_RESTART() (*(volatile uint32_t *)RESTART_ADDR)
@@ -41,6 +42,13 @@
 BMSModuleManager bms;
 SerialConsole console;
 EEPROMSettings settings;
+WDT_T4<WDT1> wdt;
+
+void wdtCallback()
+{
+	Serial.println("Feed watchdog, OR RESET!");
+}
+
 
 /////Version Identifier/////////
 int firmver = 260424;
@@ -121,7 +129,7 @@ int16_t pwmcurmin = 0;  //DONOT fill in, calculated later based on other values
 
 
 //variables for VE driect bus comms
-char *myStrings[] = { "V", "14674", "I", "0", "CE", "-1", "SOC", "800", "TTG", "-1", "Alarm", "OFF", "Relay", "OFF", "AR", "0", "BMV", "600S", "FW", "212", "H1", "-3", "H2", "-3", "H3", "0", "H4", "0", "H5", "0", "H6", "-7", "H7", "13180", "H8", "14774", "H9", "137", "H10", "0", "H11", "0", "H12", "0" };
+const char *myStrings[] = { "V", "14674", "I", "0", "CE", "-1", "SOC", "800", "TTG", "-1", "Alarm", "OFF", "Relay", "OFF", "AR", "0", "BMV", "600S", "FW", "212", "H1", "-3", "H2", "-3", "H3", "0", "H4", "0", "H5", "0", "H6", "-7", "H7", "13180", "H8", "14774", "H9", "137", "H10", "0", "H11", "0", "H12", "0" };
 
 //variables for VE can
 uint16_t chargevoltage = 49100;  //max charge voltage in mv
@@ -225,6 +233,8 @@ CRC8 crc8;
 uint8_t checksum;
 const uint8_t finalxor[12] = { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0x02, 0x38, 0x76, 0x4C };
 
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can0; // Can1 port (bms)
+FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Can1; // Can2 port (safetybox)
 
 
 ADC *adc = new ADC();  // adc object
@@ -299,7 +309,6 @@ void loadSettings() {
 
 CAN_message_t msg;
 CAN_message_t inMsg;
-CAN_filter_t filter;
 
 uint32_t lastUpdate;
 
@@ -327,19 +336,17 @@ void setup() {
   analogWriteFrequency(OUT7, pwmfreq);
   analogWriteFrequency(OUT8, pwmfreq);
 
-  Can0.begin(500000);
+  Can0.begin();
+  Can0.setBaudRate(500000);
 
-  //set filters for standard
+  // Configure mailboxes for standard frames
   for (int i = 0; i < 8; i++) {
-    Can0.getFilter(filter, i);
-    filter.flags.extended = 0;
-    Can0.setFilter(filter, i);
+    Can0.setMB((FLEXCAN_MAILBOX)i, RX, STD);
   }
-  //set filters for extended
-  for (int i = 9; i < 13; i++) {
-    Can0.getFilter(filter, i);
-    filter.flags.extended = 1;
-    Can0.setFilter(filter, i);
+
+  // Configure mailboxes for extended frames
+  for (int i = 8; i < 12; i++) {
+    Can0.setMB((FLEXCAN_MAILBOX)i, RX, EXT);
   }
 
   //if using enable pins on a transceiver they need to be set on
@@ -362,32 +369,36 @@ void setup() {
   Serial.println();
   Serial.println("Reason for last Reset: ");
 
-  if (RCM_SRS1 & RCM_SRS1_SACKERR) Serial.println("Stop Mode Acknowledge Error Reset");
-  if (RCM_SRS1 & RCM_SRS1_MDM_AP) Serial.println("MDM-AP Reset");
-  if (RCM_SRS1 & RCM_SRS1_SW) Serial.println("Software Reset");  // reboot with SCB_AIRCR = 0x05FA0004
-  if (RCM_SRS1 & RCM_SRS1_LOCKUP) Serial.println("Core Lockup Event Reset");
-  if (RCM_SRS0 & RCM_SRS0_POR) Serial.println("Power-on Reset");        // removed / applied power
-  if (RCM_SRS0 & RCM_SRS0_PIN) Serial.println("External Pin Reset");    // Reboot with software download
-  if (RCM_SRS0 & RCM_SRS0_WDOG) Serial.println("Watchdog(COP) Reset");  // WDT timed out
-  if (RCM_SRS0 & RCM_SRS0_LOC) Serial.println("Loss of External Clock Reset");
-  if (RCM_SRS0 & RCM_SRS0_LOL) Serial.println("Loss of Lock in PLL Reset");
-  if (RCM_SRS0 & RCM_SRS0_LVD) Serial.println("Low-voltage Detect Reset");
-  Serial.println();
+
+	if (SRC_SRSR & SRC_SRSR_TEMPSENSE_RST_B)
+		Serial.println("Temperature Sensor Software Reset");
+	if (SRC_SRSR & SRC_SRSR_WDOG3_RST_B)
+		Serial.println("IC Watchdog3 Timeout Reset");
+	if (SRC_SRSR & SRC_SRSR_JTAG_SW_RST)
+		Serial.println("JTAG Software Reset");
+	if (SRC_SRSR & SRC_SRSR_JTAG_RST_B)
+		Serial.println("High-Z JTAG Reset");
+	if (SRC_SRSR & SRC_SRSR_WDOG_RST_B)
+		Serial.println("IC Watchdog Timeout Reset");
+	if (SRC_SRSR & SRC_SRSR_IPP_USER_RESET_B)
+		Serial.println("Power-up Sequence (Cold Reset Event)");
+	if (SRC_SRSR & SRC_SRSR_CSU_RESET_B)
+		Serial.println("Central Security Unit Reset");
+	if (SRC_SRSR & SRC_SRSR_LOCKUP_SYSRESETREQ)
+		Serial.println("CPU Lockup or Software Reset");
+	if (SRC_SRSR & SRC_SRSR_IPP_RESET_B)
+		Serial.println("Power-up Sequence");
+	Serial.println();
   ///////////////////
 
 
-  // enable WDT
-  noInterrupts();                  // don't allow interrupts while setting up WDOG
-  WDOG_UNLOCK = WDOG_UNLOCK_SEQ1;  // unlock access to WDOG registers
-  WDOG_UNLOCK = WDOG_UNLOCK_SEQ2;
-  delayMicroseconds(1);  // Need to wait a bit..
-
-  WDOG_TOVALH = 0x1000;
-  WDOG_TOVALL = 0x0000;
-  WDOG_PRESC = 0;
-  WDOG_STCTRLH |= WDOG_STCTRLH_ALLOWUPDATE | WDOG_STCTRLH_WDOGEN | WDOG_STCTRLH_WAITEN | WDOG_STCTRLH_STOPEN | WDOG_STCTRLH_CLKSRC;
-  interrupts();
-  /////////////////
+	// enable WDT
+	WDT_timings_t config;
+	config.trigger = 1; // in seconds, 0->128
+	config.timeout = 4; // in seconds, 0->128
+	config.callback = wdtCallback;
+	wdt.begin(config);
+	/////////////////
 
 
   SERIALBMS.begin(612500);  //Tesla serial bus
@@ -439,19 +450,13 @@ void setup() {
   // setup interrupts
   //RISING/HIGH/CHANGE/LOW/FALLING
   attachInterrupt(IN4, isrCP, CHANGE);  // attach BUTTON 1 interrupt handler [ pin# 7 ]
-  
-  PMC_LVDSC1 =  PMC_LVDSC1_LVDV(1);  // enable hi v
-  PMC_LVDSC2 = PMC_LVDSC2_LVWIE | PMC_LVDSC2_LVWV(3); // 2.92-3.08v
-    attachInterruptVector(IRQ_LOW_VOLTAGE, low_voltage_isr);
-  NVIC_ENABLE_IRQ(IRQ_LOW_VOLTAGE);
 
-    bmsstatus = Boot;
+  bmsstatus = Boot;
 }
 
 void loop() {
-  while (Can0.available()) {
-    canread();
-  }
+
+  canread();
 
   if (SERIALCONSOLE.available() > 0) {
     menu();
@@ -870,7 +875,8 @@ void loop() {
     }
     cleartime = millis();
   }
-  if (millis() - looptime1 > settings.chargerspd) {
+  // Cast settings.chargerspd to uint32_t for comparison
+  if (millis() - looptime1 > static_cast<uint32_t>(settings.chargerspd)) {
     looptime1 = millis();
     if (settings.ESSmode == 1) {
       chargercomms();
@@ -1146,7 +1152,7 @@ void getcurrent() {
         SERIALCONSOLE.print(settings.offset2);
       }
       RawCur = int16_t((value * 3300 / adc->adc0->getMaxValue()) - settings.offset2) / (settings.convhigh * 0.0000066);
-      if (value < 100 || value > (adc->adc0->getMaxValue() - 100)) {
+      if (static_cast<unsigned long>(value) < 100 || static_cast<unsigned long>(value) > (adc->adc0->getMaxValue() - 100)) {
         RawCur = 0;
       }
       if (debugCur != 0) {
@@ -2973,58 +2979,61 @@ case 'r':  //r for reset
 }
 
 void canread() {
-  Can0.read(inMsg);
-  // Read data: len = data length, buf = data byte(s)
-  if (settings.cursens == Canbus) {
-    if (settings.curcan == 1) {
-      switch (inMsg.id) {
-        case 0x3c1:
-          CAB500();
-          break;
+  while (Can0.read(inMsg)) {
 
-        case 0x3c2:
-          CAB300();
-          break;
+    // Read data: len = data length, buf = data byte(s)
+    if (settings.cursens == Canbus) {
+      if (settings.curcan == 1) {
+        switch (inMsg.id) {
+          case 0x3c1:
+            CAB500();
+            break;
 
-        default:
-          break;
+          case 0x3c2:
+            CAB300();
+            break;
+
+          default:
+            break;
+        }
       }
-    }
-    if (settings.curcan == 2) {
-      switch (inMsg.id) {
-        case 0x3c1:
-          CAB500();
-          break;
+      if (settings.curcan == 2) {
+        switch (inMsg.id) {
+          case 0x3c1:
+            CAB500();
+            break;
 
-        case 0x3c2:
-          CAB500();
-          break;
+          case 0x3c2:
+            CAB500();
+            break;
 
-        default:
-          break;
+          default:
+            break;
+        }
       }
-    }
-    if (settings.curcan == 3) {
-      switch (inMsg.id) {
-        case 0x521:  //
-          CANmilliamps = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
-          RawCur = CANmilliamps;
-          getcurrent();
-          break;
+      if (settings.curcan == 3) {
+        switch (inMsg.id) {
+          case 0x521:  //
+            CANmilliamps = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
+            RawCur = CANmilliamps;
+            getcurrent();
+            break;
 
-        case 0x522:  //
-          voltage1 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
-          break;
+          case 0x522:  //
+            voltage1 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
+            break;
 
-        case 0x523:  //
-          voltage2 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
-          break;
+          case 0x523:  //
+            voltage2 = (long)((inMsg.buf[2] << 24) | (inMsg.buf[3] << 16) | (inMsg.buf[4] << 8) | (inMsg.buf[5]));
+            break;
 
-        default:
-          break;
+          default:
+            break;
+        }
       }
     }
   }
+
 
 
   //ID not assigned//
@@ -3104,7 +3113,7 @@ void CAB300() {
     inbox = (inbox << 8) | inMsg.buf[i];
   }
   CANmilliamps = inbox;
-  if (CANmilliamps > 0x80000000) {
+  if (CANmilliamps > static_cast<long>(0x80000000)) {
     CANmilliamps -= 0x80000000;
   } else {
     CANmilliamps = (0x80000000 - CANmilliamps) * -1;
@@ -3392,8 +3401,7 @@ void sendcommand()  //Send Can Command to get data from slaves
 
 void resetwdog() {
   noInterrupts();  //   No - reset WDT
-  WDOG_REFRESH = 0xA602;
-  WDOG_REFRESH = 0xB480;
+  wdt.feed();
   interrupts();
 }
 
@@ -3525,7 +3533,7 @@ void chargercomms() {
   if (settings.chargertype == Elcon) {
     msg.id = 0x1806E5F4;  //broadcast to all Elteks
     msg.len = 8;
-    msg.ext = 1;
+    msg.flags.extended = 1;
     msg.buf[0] = highByte(uint16_t(settings.ChargeVsetpoint * settings.Scells * 10));
     msg.buf[1] = lowByte(uint16_t(settings.ChargeVsetpoint * settings.Scells * 10));
     msg.buf[2] = highByte(chargecurrent / ncharger);
@@ -3536,7 +3544,6 @@ void chargercomms() {
     msg.buf[7] = 0x00;
 
     Can0.write(msg);
-    msg.ext = 0;
   }
 
   if (settings.chargertype == Eltek) {
@@ -3649,7 +3656,7 @@ uint8_t getcheck(CAN_message_t &msg, int id) {
 void resetbalancedebug() {
   msg.id = 0x0B0;  //broadcast to all Elteks
   msg.len = 8;
-  msg.ext = 0;
+  msg.flags.extended = 0;
   msg.buf[0] = 0xFF;
   msg.buf[1] = 0x00;
   msg.buf[2] = 0xCD;
@@ -3667,7 +3674,7 @@ void resetIDdebug() {
   for (int ID = 0; ID < 15; ID++) {
     msg.id = 0x0A0;  //broadcast to all CSC
     msg.len = 8;
-    msg.ext = 0;
+    msg.flags.extended = 0;
     msg.buf[0] = 0xA1;
     msg.buf[1] = ID;
     msg.buf[2] = 0xFF;
@@ -3688,7 +3695,7 @@ void resetIDdebug() {
 
   msg.id = 0x0A0;  //broadcast to all CSC
   msg.len = 8;
-  msg.ext = 0;
+
   msg.buf[0] = 0x37;
   msg.buf[1] = 0xFF;
   msg.buf[2] = 0xFF;
@@ -3706,7 +3713,7 @@ void findUnassigned() {
   //check for found unassigned CSC
   msg.id = 0x0A0;  //broadcast to all CSC
   msg.len = 8;
-  msg.ext = 0;
+  msg.flags.extended = 0;
   msg.buf[0] = 0x37;
   msg.buf[1] = 0xFF;
   msg.buf[2] = 0xFF;
@@ -3722,7 +3729,6 @@ void findUnassigned() {
 void assignID() {
   msg.id = 0x0A0;  //broadcast to all CSC
   msg.len = 8;
-  msg.ext = 0;
   msg.buf[0] = 0x12;
   msg.buf[1] = 0xAB;
   msg.buf[2] = DMC[0];
@@ -3768,9 +3774,3 @@ void isrCP() {
   }
 }  // ******** end of isr CP ********
 
-void low_voltage_isr(void) {
-  EEPROM.update(1000, uint8_t(SOC));
-
-  PMC_LVDSC2 |= PMC_LVDSC2_LVWACK;  // clear if we can
-  PMC_LVDSC1 |= PMC_LVDSC1_LVDACK;
-}
