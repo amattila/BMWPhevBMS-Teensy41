@@ -3330,7 +3330,7 @@ void sendcommand()  //Send Can Command to get data from slaves
 {
   ///////module id cycling/////////
 
-  if (nextmes == 6) {
+  if (nextmes == 12) {
     mescycle++;
     nextmes = 0;
     if (testcycle < 4) {
