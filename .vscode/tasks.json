@@ -1,0 +1,59 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "PlatformIO",
+            "task": "Build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "label": "PlatformIO: Build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [
+                "$platformio"
+            ]
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Upload",
+            "group": "build",
+            "label": "PlatformIO: Upload",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [
+                "$platformio"
+            ]
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Clean",
+            "group": "build",
+            "label": "PlatformIO: Clean",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [
+                "$platformio"
+            ]
+        }
+    ]
+} 
