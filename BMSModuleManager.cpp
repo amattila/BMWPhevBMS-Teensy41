@@ -51,7 +51,7 @@ bool BMSModuleManager::checkstatus()
   {
     if (modules[y].isExisting())
     {
-      if (modules[y].getError() & 0x2000 >= 0)
+      if ((modules[y].getError() & 0x2000) >= 0)
       {
         return true;
       }
@@ -63,13 +63,40 @@ bool BMSModuleManager::checkstatus()
 int BMSModuleManager::seriescells()
 {
   spack = 0;
+  int moduleCount = 0;
   for (int y = 1; y < 63; y++)
   {
     if (modules[y].isExisting())
     {
-      spack = spack + modules[y].getscells();
+      int cellsInModule = modules[y].getscells();
+      spack = spack + cellsInModule;
+      moduleCount++;
+      
+      // Debug: show which modules are missing cells
+      if (cellsInModule != 8) {
+        Serial.print("Module ");
+        Serial.print(y);
+        Serial.print(" has ");
+        Serial.print(cellsInModule);
+        Serial.println(" cells");
+      }
     }
   }
+  
+  // Debug: show total module count vs expected
+  if (moduleCount != 12) {
+    Serial.print("WARNING: Only ");
+    Serial.print(moduleCount);
+    Serial.print(" modules existing, expected 12. Missing modules: ");
+    for (int y = 1; y <= 12; y++) {
+      if (!modules[y].isExisting()) {
+        Serial.print(y);
+        Serial.print(" ");
+      }
+    }
+    Serial.println();
+  }
+  
   return spack;
 }
 
@@ -107,6 +134,30 @@ void BMSModuleManager::decodecan(CAN_message_t &msg, int debug)
 {
   int Id = (msg.id & 0x0F0);
   int CMU = (msg.id & 0x00F) + 1;
+  
+  // Debug: track which modules send data
+  static unsigned long lastDebugTime = 0;
+  static int moduleDataCount[13] = {0}; // modules 1-12
+  
+  if (CMU >= 1 && CMU <= 12) {
+    moduleDataCount[CMU]++;
+  }
+  
+  // Print debug info every 10 seconds
+  if (debug == 1 && millis() - lastDebugTime > 10000) {
+    Serial.println("=== CAN Data Reception Count (last 10s) ===");
+    for (int i = 1; i <= 12; i++) {
+      Serial.print("Module ");
+      Serial.print(i);
+      Serial.print(": ");
+      Serial.print(moduleDataCount[i]);
+      Serial.print(" messages");
+      if (moduleDataCount[i] == 0) Serial.print(" <- NO DATA!");
+      Serial.println();
+      moduleDataCount[i] = 0; // reset counter
+    }
+    lastDebugTime = millis();
+  }
   /*
     if (msg.id == 0x100)
     {
@@ -458,48 +509,25 @@ void BMSModuleManager::printPackDetails(int digits, int CSCvariant)
       SERIALCONSOLE.print("  ");
       SERIALCONSOLE.print(modules[y].getModuleVoltage(), digits);
       SERIALCONSOLE.print("V");
-      for (int i = 0; i < 16; i++)
+      
+      int cellsToShow = 8;
+      for (int i = 0; i < cellsToShow; i++)
       {
         if (cellNum < 10) SERIALCONSOLE.print(" ");
-        SERIALCONSOLE.print("  Cell");
+        SERIALCONSOLE.print("  ");
         SERIALCONSOLE.print(cellNum++);
         SERIALCONSOLE.print(": ");
-        SERIALCONSOLE.print(modules[y].getCellVoltage(i), digits);
+        SERIALCONSOLE.print(modules[y].getCellVoltage(i), digits + 1);
         SERIALCONSOLE.print("V");
       }
-      /*
-        if (CSCvariant == 0)
-        {
-        for (int i = 0; i < 12; i++)
-        {
-          if (cellNum < 10) SERIALCONSOLE.print(" ");
-          SERIALCONSOLE.print("  Cell");
-          SERIALCONSOLE.print(cellNum++);
-          SERIALCONSOLE.print(": ");
-          SERIALCONSOLE.print(modules[y].getCellVoltage(i), digits);
-          SERIALCONSOLE.print("V");
-        }
-        }
-        if (CSCvariant == 1)
-        {
-        for (int i = 0; i < 8; i++)
-        {
-          if (cellNum < 10) SERIALCONSOLE.print(" ");
-          SERIALCONSOLE.print("  Cell");
-          SERIALCONSOLE.print(cellNum++);
-          SERIALCONSOLE.print(": ");
-          SERIALCONSOLE.print(modules[y].getCellVoltage(i), digits);
-          SERIALCONSOLE.print("V");
-        }
-        }
-      */
-      SERIALCONSOLE.println();
-
-      SERIALCONSOLE.print(" Temp 1: ");
-      SERIALCONSOLE.print(modules[y].getTemperature(0));
-
-      SERIALCONSOLE.print("C Temp 2: ");
-      SERIALCONSOLE.print(modules[y].getTemperature(1));
+      
+      // Temperatures on same line
+      SERIALCONSOLE.print(" T1: ");
+      SERIALCONSOLE.print(modules[y].getTemperature(0), 2);
+      SERIALCONSOLE.print("C T2: ");
+      SERIALCONSOLE.print(modules[y].getTemperature(1), 2);
+      SERIALCONSOLE.print("C T3: ");
+      SERIALCONSOLE.print(modules[y].getTemperature(2), 2);
       SERIALCONSOLE.print("C Status: 0x");
       SERIALCONSOLE.print(modules[y].getError(), HEX);
       SERIALCONSOLE.print(" Bal: 0x");

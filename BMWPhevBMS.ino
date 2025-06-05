@@ -267,7 +267,7 @@ void loadSettings() {
   settings.logLevel = 2;
   settings.CAP = 100;                //battery size in Ah
   settings.Pstrings = 1;             // strings in parallel used to divide voltage of pack
-  settings.Scells = 12;              //Cells in series
+  settings.Scells = 8;              //Cells in series
   settings.StoreVsetpoint = 3.8;     // V storage mode charge max
   settings.discurrentmax = 300;      // max discharge current in 0.1A
   settings.DisTaper = 0.3f;          //V offset to bring in discharge taper to Zero Amps at settings.DischVsetpoint
@@ -312,6 +312,130 @@ CAN_message_t inMsg;
 
 uint32_t lastUpdate;
 
+String inputBuffer = "";
+bool waitingForInput = false;
+char currentCommand = 0;
+
+void processMenuValue(char command, int value) {
+  switch (command) {
+    case 'a':  // Cells in Series per String
+      settings.Scells = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set Scells = ");
+      SERIALCONSOLE.println(value);
+      break;
+    case '0':  // Parallel strings
+      settings.Pstrings = value;
+      bms.setPstrings(settings.Pstrings);
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set Pstrings = ");
+      SERIALCONSOLE.println(value);
+      break;
+    case '1':  // Over Voltage
+      settings.OverVSetpoint = value / 1000.0;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set OverVSetpoint = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case '2':  // Under Voltage
+      settings.UnderVSetpoint = value / 1000.0;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set UnderVSetpoint = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case '3':  // Over Temperature
+      settings.OverTSetpoint = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set OverTSetpoint = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("C");
+      break;
+    case '4':  // Under Temperature
+      settings.UnderTSetpoint = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set UnderTSetpoint = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("C");
+      break;
+    case '5':  // Balance Voltage
+      settings.balanceVoltage = value / 1000.0;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set balanceVoltage = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case '6':        // Balance Hysteresis
+      settings.balanceHyst = value / 1000.0;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set balanceHyst = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case '7':  // Battery Capacity
+      settings.CAP = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set CAP = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("Ah");
+      break;
+    case '8':  // Discharge current
+      settings.discurrentmax = value * 10;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set discurrentmax = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("A");
+      break;
+    case '9':  // Discharge Voltage Setpoint
+      settings.DischVsetpoint = value / 1000.0;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set DischVsetpoint = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case 'b':  // SOC setpoint 1 voltage
+      settings.socvolt[0] = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set SOC setpoint 1 voltage = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case 'c':  // SOC setpoint 1 percentage
+      settings.socvolt[1] = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set SOC setpoint 1 percentage = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("%");
+      break;
+    case 'd':  // SOC setpoint 2 voltage
+      settings.socvolt[2] = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set SOC setpoint 2 voltage = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("mV");
+      break;
+    case 'e':  // SOC setpoint 2 percentage
+      settings.socvolt[3] = value;
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Set SOC setpoint 2 percentage = ");
+      SERIALCONSOLE.print(value);
+      SERIALCONSOLE.println("%");
+      break;
+    default:
+      SERIALCONSOLE.println();
+      SERIALCONSOLE.print("Unknown command: ");
+      SERIALCONSOLE.println(command);
+      break;
+  }
+  
+  // Print confirmation and return to menu
+  SERIALCONSOLE.println();
+  SERIALCONSOLE.println("=== Value Set ===");
+  
+  menuload = 1;  // Return to menu
+  incomingByte = 'b';  // Battery menu - reprint menu
+}
 
 void setup() {
   //delay(4000);  //just for easy debugging. It takes a few seconds for USB to come up properly on most OS's
@@ -814,11 +938,24 @@ void loop() {
       cellspresent = bms.seriescells();  //set amount of connected cells, might need delay
       bms.setSensors(settings.IgnoreTemp, settings.IgnoreVolt, settings.TempOff);
     } else {
-      if (cellspresent != bms.seriescells())  //detect a fault in cells detected
-      {
+      int currentCells = bms.seriescells();
+      if (currentCells > cellspresent) {
+        // More cells detected - update to new count (modules coming online)
+        cellspresent = currentCells;
         if (debug != 0) {
           SERIALCONSOLE.println("  ");
-          SERIALCONSOLE.print("   !!! Series Cells Fault !!!");
+          SERIALCONSOLE.print("   >>> Cell count updated to: ");
+          SERIALCONSOLE.print(cellspresent);
+          SERIALCONSOLE.println("  ");
+        }
+      } else if (cellspresent != currentCells) {
+        // Fewer cells detected - this is a fault
+        if (debug != 0) {
+          SERIALCONSOLE.println("  ");
+          SERIALCONSOLE.print("   !!! Series Cells Fault !!! ");
+          SERIALCONSOLE.print(cellspresent);
+          SERIALCONSOLE.print("/");
+          SERIALCONSOLE.print(currentCells);
           SERIALCONSOLE.println("  ");
         }
         bmsstatus = Error;
@@ -1869,8 +2006,35 @@ void BMVmessage()  //communication with the Victron Color Control System over VE
 // Settings menu
 // Settings menu
 void menu() {
+  incomingByte = SERIALCONSOLE.read();
+  
+  if (waitingForInput) {
+    if (incomingByte == '\n' || incomingByte == '\r') {
+      // Enter pressed, process input
+      if (inputBuffer.length() > 0) {
+        int value = inputBuffer.toInt();
+        processMenuValue(currentCommand, value);
+        inputBuffer = "";
+        waitingForInput = false;
+        currentCommand = 0;
+      }
+      return;
+    } else if (incomingByte >= '0' && incomingByte <= '9') {
+      // Add number to buffer
+      inputBuffer += (char)incomingByte;
+      SERIALCONSOLE.print((char)incomingByte); // Echo back
+      return;
+    } else if (incomingByte == 8 || incomingByte == 127) { // Backspace
+      if (inputBuffer.length() > 0) {
+        inputBuffer.remove(inputBuffer.length() - 1);
+        SERIALCONSOLE.print("\b \b"); // Remove last character from display
+      }
+      return;
+    }
+    // Ignore other characters while waiting for number
+    return;
+  }
 
-  incomingByte = Serial.read();  // read the incoming byte:
   if (menuload == 4) {
     switch (incomingByte) {
 
@@ -2383,12 +2547,10 @@ case 'r':  //r for reset
 
 
       case '1':  //1 Over Voltage Setpoint
-        if (Serial.available() > 0) {
-          settings.OverVSetpoint = Serial.parseInt();
-          settings.OverVSetpoint = settings.OverVSetpoint / 1000;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Over Voltage Setpoint (mV): ");
+        waitingForInput = true;
+        currentCommand = '1';
         break;
 
       case 'g':
@@ -2416,37 +2578,32 @@ case 'r':  //r for reset
         }
         break;
 
-      case 'b':
-        if (Serial.available() > 0) {
-          settings.socvolt[0] = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case 'b':  // SOC setpoint 1 voltage
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter SOC setpoint 1 voltage (mV): ");
+        waitingForInput = true;
+        currentCommand = 'b';
         break;
 
-
-      case 'c':
-        if (Serial.available() > 0) {
-          settings.socvolt[1] = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case 'c':  // SOC setpoint 1 percentage
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter SOC setpoint 1 percentage (%): ");
+        waitingForInput = true;
+        currentCommand = 'c';
         break;
 
-      case 'd':
-        if (Serial.available() > 0) {
-          settings.socvolt[2] = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case 'd':  // SOC setpoint 2 voltage
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter SOC setpoint 2 voltage (mV): ");
+        waitingForInput = true;
+        currentCommand = 'd';
         break;
 
-      case 'e':
-        if (Serial.available() > 0) {
-          settings.socvolt[3] = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case 'e':  // SOC setpoint 2 percentage
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter SOC setpoint 2 percentage (%): ");
+        waitingForInput = true;
+        currentCommand = 'e';
         break;
 
       case 'k':  //Discharge Voltage hysteresis
@@ -2469,88 +2626,73 @@ case 'r':  //r for reset
         break;
 
       case '9':  //Discharge Voltage Setpoint
-        if (Serial.available() > 0) {
-          settings.DischVsetpoint = Serial.parseInt();
-          settings.DischVsetpoint = settings.DischVsetpoint / 1000;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Discharge Voltage Setpoint (mV): ");
+        waitingForInput = true;
+        currentCommand = '9';
         break;
 
       case '0':  //c Pstrings
-        if (Serial.available() > 0) {
-          settings.Pstrings = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-          bms.setPstrings(settings.Pstrings);
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Parallel strings count: ");
+        waitingForInput = true;
+        currentCommand = '0';
         break;
 
-      case 'a':  //
-        if (Serial.available() > 0) {
-          settings.Scells = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case 'a':  // Cells in Series per String
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Cells in Series per String: ");
+        waitingForInput = true;
+        currentCommand = 'a';
         break;
 
       case '2':  //2 Under Voltage Setpoint
-        if (Serial.available() > 0) {
-          settings.UnderVSetpoint = Serial.parseInt();
-          settings.UnderVSetpoint = settings.UnderVSetpoint / 1000;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Under Voltage Setpoint (mV): ");
+        waitingForInput = true;
+        currentCommand = '2';
         break;
 
       case '3':  //3 Over Temperature Setpoint
-        if (Serial.available() > 0) {
-          settings.OverTSetpoint = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Over Temperature Setpoint (C): ");
+        waitingForInput = true;
+        currentCommand = '3';
         break;
 
-      case '4':  //4 Udner Temperature Setpoint
-        if (Serial.available() > 0) {
-          settings.UnderTSetpoint = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case '4':  //4 Under Temperature Setpoint
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Under Temperature Setpoint (C): ");
+        waitingForInput = true;
+        currentCommand = '4';
         break;
 
       case '5':  //5 Balance Voltage Setpoint
-        if (Serial.available() > 0) {
-          settings.balanceVoltage = Serial.parseInt();
-          settings.balanceVoltage = settings.balanceVoltage / 1000;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Balance Voltage Setpoint (mV): ");
+        waitingForInput = true;
+        currentCommand = '5';
         break;
 
-      case '6':  //6 Balance Voltage Hystersis
-        if (Serial.available() > 0) {
-          settings.balanceHyst = Serial.parseInt();
-          settings.balanceHyst = settings.balanceHyst / 1000;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+      case '6':  //6 Balance Voltage Hysteresis
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Balance Voltage Hysteresis (mV): ");
+        waitingForInput = true;
+        currentCommand = '6';
         break;
 
       case '7':  //7 Battery Capacity inAh
-        if (Serial.available() > 0) {
-          settings.CAP = Serial.parseInt();
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Battery Capacity (Ah): ");
+        waitingForInput = true;
+        currentCommand = '7';
         break;
 
       case '8':  // discurrent in A
-        if (Serial.available() > 0) {
-          settings.discurrentmax = Serial.parseInt() * 10;
-          menuload = 1;
-          incomingByte = 'b';
-        }
+        SERIALCONSOLE.println();
+        SERIALCONSOLE.print("Enter Max Discharge Current (A): ");
+        waitingForInput = true;
+        currentCommand = '8';
         break;
     }
   }
@@ -2602,11 +2744,11 @@ case 'r':  //r for reset
           SERIALCONSOLE.print("3 - Pack Max Charge Current: ");
           SERIALCONSOLE.print(settings.chargecurrentmax * 0.1);
           SERIALCONSOLE.println("A");
-          SERIALCONSOLE.print("4- Pack End of Charge Current: ");
+          SERIALCONSOLE.print("4 - Pack End of Charge Current: ");
           SERIALCONSOLE.print(settings.chargecurrentend * 0.1);
           SERIALCONSOLE.println("A");
         }
-        SERIALCONSOLE.print("5- Charger Type: ");
+        SERIALCONSOLE.print("5 - Charger Type: ");
         switch (settings.chargertype) {
           case 0:
             SERIALCONSOLE.print("Relay Control");
